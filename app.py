@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse, FileResponse, PlainTextResponse
 import tempfile, subprocess, os, shutil, uuid
 
 APP_TOKEN = os.getenv("OCR_TOKEN", "changeme")
-app = FastAPI(title="Tiny OCR API (Tesseract/OCRmyPDF)")
+app = FastAPI(title="Tiny OCR API (Fast MVP OCR)")
 
 @app.get("/")
 def root():
@@ -22,9 +22,9 @@ async def ocr_pdf(
     lang: str = Query("eng", description="tesseract language(s), e.g. eng or eng+spa"),
     pages: str | None = Query(None, description="e.g. 1-2 or 1,3,5"),
     make_searchable: bool = Query(True),
-    x_token: str | None = Header(None)
+    x_app_token: str | None = Header(None, alias="x-app-token")
 ):
-    if x_token != APP_TOKEN:
+    if x_app_token != APP_TOKEN:
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
 
     work = tempfile.mkdtemp(prefix="ocr_")
@@ -38,12 +38,12 @@ async def ocr_pdf(
 
         cmd = [
             "ocrmypdf",
-            "--skip-text",
             "--rotate-pages",
-            "--optimize", "1",
+            "--optimize", "0",          # lighter processing
             "--language", lang,
-            "--jobs", "2",
+            "--jobs", "1",              # keep resource light
             "--tesseract-timeout", "120",
+            "--force-ocr",              # always OCR (fast + simple)
             "--sidecar", sidecar
         ]
         if pages:
