@@ -94,6 +94,7 @@ async def ocr_pdf(
                     shutil.copyfile(in_pdf, out_pdf)
                     skipped_ocr = True
 
+
         if not skipped_ocr:
             cmd = [
                 "ocrmypdf",
