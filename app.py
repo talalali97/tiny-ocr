@@ -41,7 +41,7 @@ def get_page_count(pdf_path: str) -> int:
     except Exception:
         pass
     try:
-        info = run(f"pdfinfo '{pdf_path}' | grep -i '^Pages:' | awk '{print $2}'")
+        info = run(f"pdfinfo '{pdf_path}' | grep -i '^Pages:' | awk '{{print $2}}'")
         n = int(info.strip())
         if n > 0:
             return n
