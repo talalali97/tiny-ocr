@@ -62,10 +62,7 @@ async def ocr_pdf(
     file: UploadFile = File(...),
     lang: str = Query("eng", description="tesseract language(s), e.g. eng or eng+spa"),
     pages: str | None = Query(None, description="e.g. 1-2 or 1,3,5"),
-    tesseract_oem: int | None = Query(1, ge=0, le=3, description="Tesseract OCR Engine Mode (0-3). 1=LSTM-only is usually fast + accurate."),
-    tesseract_psm: int | None = Query(6, ge=0, le=13, description="Tesseract Page Segmentation Mode (0-13). 6 often speeds up uniform pages."),
-    only_ocr_if_needed: bool = Query(True, description="Skip OCR entirely if every page already has text"),
-    min_chars_per_page: int = Query(8, ge=0, le=200, description="Threshold to decide a page has text"),
+    make_searchable: bool = Query(False),
     x_app_token: str | None = Header(None, alias="x-app-token")
 ):
     if x_app_token != APP_TOKEN:
@@ -80,39 +77,19 @@ async def ocr_pdf(
         with open(in_pdf, "wb") as f:
             f.write(await file.read())
 
-        skipped_ocr = False
-        if only_ocr_if_needed:
-            total_pages = get_page_count(in_pdf)
-            if total_pages > 0:
-                all_texty = True
-                for i in range(1, total_pages + 1):
-                    if not page_has_text(in_pdf, i, min_chars_per_page):
-                        all_texty = False
-                        break
-                if all_texty:
-                    # Already fully searchable; skip OCR and reuse input
-                    shutil.copyfile(in_pdf, out_pdf)
-                    skipped_ocr = True
-
-
-        if not skipped_ocr:
-            cmd = [
-                "ocrmypdf",
-                "--optimize", "0",              # no extra compression work (fastest)
-                "--language", lang,
-                "--jobs", "1",                  # keep serial for predictable resource usage
-                "--tesseract-timeout", "120",   # guardrail for pathological inputs
-                "--sidecar", sidecar
-            ]
-
-            # Pass through safe Tesseract speed knobs when explicitly provided
-            if tesseract_oem is not None:
-                cmd += ["--tesseract-oem", str(tesseract_oem)]
-            if tesseract_psm is not None:
-                cmd += ["--tesseract-pagesegmode", str(tesseract_psm)]
-            if pages:
-                cmd += ["--pages", pages]
-            cmd += [in_pdf, out_pdf]
+        cmd = [
+            "ocrmypdf",
+            "--rotate-pages",
+            "--optimize", "0",          # lighter processing
+            "--language", lang,
+            "--jobs", "1",              # keep resource light
+            "--tesseract-timeout", "120", # Timeout for tesseract part of ocrmypdf
+            "--force-ocr",              # always OCR (fast + simple)
+            "--sidecar", sidecar
+        ]
+        if pages:
+            cmd += ["--pages", pages]
+        cmd += [in_pdf, out_pdf]
 
             # Execute ocrmypdf
             run(" ".join(cmd))
@@ -130,12 +107,18 @@ async def ocr_pdf(
         if not text and os.path.exists(sidecar):
             with open(sidecar, "r", encoding="utf-8", errors="ignore") as s:
                 text = s.read()
-                
+
+        token = str(uuid.uuid4())
+        
+        cached_pdf = os.path.join("/tmp", f"{token}.pdf")
+        shutil.copyfile(out_pdf, cached_pdf)
+
         return JSONResponse({
             "ok": True,
             "pages": pages or "all",
             "lang": lang,
-            "text": text
+            "text": text,
+            "searchable_pdf": f"/download/{token}"
         })
     except Exception as e:
         # Catch all exceptions during processing and return a 500
