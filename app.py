@@ -35,7 +35,8 @@ async def ocr_pdf(
     file: UploadFile = File(...),
     lang: str = Query("eng", description="tesseract language(s), e.g. eng or eng+spa"),
     pages: str | None = Query(None, description="e.g. 1-2 or 1,3,5"),
-    make_searchable: bool = Query(True),
+    tesseract_oem: int | None = Query(1, ge=0, le=3, description="Tesseract OCR Engine Mode (0-3). 1=LSTM-only is usually fast + accurate."),
+    tesseract_psm: int | None = Query(6, ge=0, le=13, description="Tesseract Page Segmentation Mode (0-13). 6 often speeds up uniform pages."),
     x_app_token: str | None = Header(None, alias="x-app-token")
 ):
     if x_app_token != APP_TOKEN:
@@ -52,14 +53,19 @@ async def ocr_pdf(
 
         cmd = [
             "ocrmypdf",
-            "--rotate-pages",
-            "--optimize", "0",          # lighter processing
+            "--force-ocr",
+            "--optimize", "0",              # no extra compression work (fastest)
             "--language", lang,
-            "--jobs", "1",              # keep resource light
-            "--tesseract-timeout", "120", # Timeout for tesseract part of ocrmypdf
-            "--force-ocr",              # always OCR (fast + simple)
+            "--jobs", "1",                  # keep serial for predictable resource usage
+            "--tesseract-timeout", "120",   # guardrail for pathological inputs
             "--sidecar", sidecar
         ]
+
+        # Pass through safe Tesseract speed knobs when explicitly provided
+        if tesseract_oem is not None:
+            cmd += ["--tesseract-oem", str(tesseract_oem)]
+        if tesseract_psm is not None:
+            cmd += ["--tesseract-pagesegmode", str(tesseract_psm)]
         if pages:
             cmd += ["--pages", pages]
         cmd += [in_pdf, out_pdf]
@@ -71,18 +77,12 @@ async def ocr_pdf(
         if os.path.exists(sidecar):
             with open(sidecar, "r", encoding="utf-8", errors="ignore") as s:
                 text = s.read()
-
-        token = str(uuid.uuid4())
-        
-        cached_pdf = os.path.join("/tmp", f"{token}.pdf")
-        shutil.copyfile(out_pdf, cached_pdf)
-
+                
         return JSONResponse({
             "ok": True,
             "pages": pages or "all",
             "lang": lang,
-            "text": text,
-            "searchable_pdf": f"/download/{token}"
+            "text": text
         })
     except Exception as e:
         # Catch all exceptions during processing and return a 500
@@ -90,10 +90,3 @@ async def ocr_pdf(
     finally:
         # Ensure temporary working directory is cleaned up
         shutil.rmtree(work, ignore_errors=True)
-
-@app.get("/download/{token}")
-def download(token: str):
-    path = os.path.join("/tmp", f"{token}.pdf")
-    if not os.path.exists(path):
-        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
-    return FileResponse(path, media_type="application/pdf", filename="searchable.pdf")
