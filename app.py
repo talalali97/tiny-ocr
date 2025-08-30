@@ -30,39 +30,13 @@ def run(cmd: str):
         raise RuntimeError(p.stdout)
     return p.stdout
 
-# --- Fast preflight helpers to avoid unnecessary OCR ---
-def get_page_count(pdf_path: str) -> int:
-    """Return number of pages using qpdf or pdfinfo."""
-    try:
-        out = run(f"qpdf --show-npages '{pdf_path}'")
-        n = int(out.strip())
-        if n > 0:
-            return n
-    except Exception:
-        pass
-    try:
-        info = run(f"pdfinfo '{pdf_path}' | grep -i '^Pages:' | awk '{{print $2}}'")
-        n = int(info.strip())
-        if n > 0:
-            return n
-    except Exception:
-        pass
-    return 0
-
-def page_has_text(pdf_path: str, page: int, min_chars: int) -> bool:
-    """Return True if the given page seems to contain text >= min_chars."""
-    try:
-        txt = run(f"pdftotext -layout -nopgbrk -f {page} -l {page} '{pdf_path}' -")
-        return len(txt.strip()) >= min_chars
-    except Exception:
-        return False
-
 @app.post("/ocr")
 async def ocr_pdf(
     file: UploadFile = File(...),
     lang: str = Query("eng", description="tesseract language(s), e.g. eng or eng+spa"),
     pages: str | None = Query(None, description="e.g. 1-2 or 1,3,5"),
-    make_searchable: bool = Query(False),
+    tesseract_oem: int | None = Query(1, ge=0, le=3, description="Tesseract OCR Engine Mode (0-3). 1=LSTM-only is usually fast + accurate."),
+    tesseract_psm: int | None = Query(6, ge=0, le=13, description="Tesseract Page Segmentation Mode (0-13). 6 often speeds up uniform pages."),
     x_app_token: str | None = Header(None, alias="x-app-token")
 ):
     if x_app_token != APP_TOKEN:
@@ -79,46 +53,36 @@ async def ocr_pdf(
 
         cmd = [
             "ocrmypdf",
-            "--rotate-pages",
-            "--optimize", "0",          # lighter processing
+            "--force-ocr",
+            "--optimize", "0",              # no extra compression work (fastest)
             "--language", lang,
-            "--jobs", "1",              # keep resource light
-            "--tesseract-timeout", "120", # Timeout for tesseract part of ocrmypdf
-            "--force-ocr",              # always OCR (fast + simple)
+            "--jobs", "1",                  # keep serial for predictable resource usage
+            "--tesseract-timeout", "120",   # guardrail for pathological inputs
             "--sidecar", sidecar
         ]
+
+        # Pass through safe Tesseract speed knobs when explicitly provided
+        if tesseract_oem is not None:
+            cmd += ["--tesseract-oem", str(tesseract_oem)]
+        if tesseract_psm is not None:
+            cmd += ["--tesseract-pagesegmode", str(tesseract_psm)]
         if pages:
             cmd += ["--pages", pages]
         cmd += [in_pdf, out_pdf]
 
-            # Execute ocrmypdf
-            run(" ".join(cmd))
+        # Execute ocrmypdf
+        run(" ".join(cmd))
 
-        # Prefer extracting text from the final PDF so we capture
-        # both existing text layers and any new OCR text. Fall back
-        # to the sidecar if pdftotext is unavailable or returns empty.
         text = ""
-        try:
-            pdf_text = run(f"pdftotext -layout -nopgbrk '{out_pdf}' -")
-            if pdf_text and pdf_text.strip():
-                text = pdf_text
-        except Exception:
-            pass
-        if not text and os.path.exists(sidecar):
+        if os.path.exists(sidecar):
             with open(sidecar, "r", encoding="utf-8", errors="ignore") as s:
                 text = s.read()
-
-        token = str(uuid.uuid4())
-        
-        cached_pdf = os.path.join("/tmp", f"{token}.pdf")
-        shutil.copyfile(out_pdf, cached_pdf)
-
+                
         return JSONResponse({
             "ok": True,
             "pages": pages or "all",
             "lang": lang,
-            "text": text,
-            "searchable_pdf": f"/download/{token}"
+            "text": text
         })
     except Exception as e:
         # Catch all exceptions during processing and return a 500
